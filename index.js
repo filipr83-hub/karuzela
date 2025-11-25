@@ -1,62 +1,57 @@
 const express = require('express');
 const path = require('path');
-const { Canvas, Image, FontLibrary } = require('skia-canvas');
+// 🔥 1. ZMIANA: Dodajemy loadImage do importów
+const { Canvas, Image, FontLibrary, loadImage } = require('skia-canvas');
 const fs = require('fs');
-const https = require('https');
-const http = require('http');
 
 const app = express();
 app.use(express.json());
 
-// Railway przydziela port dynamicznie w zmiennej PORT
 const PORT = process.env.PORT || 3000;
 
 // === KONFIGURACJA CZCIONEK ===
 const fontsDir = path.join(__dirname, 'assets', 'fonts');
 
-// Funkcja rejestrująca fonty z obsługą błędów
 function registerFonts() {
-    // 1. Rejestracja GRUBEJ czcionki (u Ciebie ExtraBold)
-    // UWAGA: Musisz mieć plik: assets/fonts/Montserrat-ExtraBold.ttf
     if (fs.existsSync(path.join(fontsDir, 'Montserrat-ExtraBold.ttf'))) {
         FontLibrary.use("Montserrat-Bold", path.join(fontsDir, 'Montserrat-ExtraBold.ttf'));
-        console.log("Załadowano: Montserrat-ExtraBold");
+        console.log("✅ Załadowano: Montserrat-ExtraBold");
     } else {
-        console.error("❌ BŁĄD KRYTYCZNY: Brak pliku Montserrat-ExtraBold.ttf w assets/fonts/");
+        console.error("❌ BŁĄD: Brak pliku Montserrat-ExtraBold.ttf");
     }
 
-    // 2. Rejestracja ZWYKŁEJ czcionki
-    // UWAGA: Musisz dograć plik: assets/fonts/Montserrat-Regular.ttf
     if (fs.existsSync(path.join(fontsDir, 'Montserrat-Regular.ttf'))) {
         FontLibrary.use("Montserrat-Regular", path.join(fontsDir, 'Montserrat-Regular.ttf'));
-        console.log("Załadowano: Montserrat-Regular");
+        console.log("✅ Załadowano: Montserrat-Regular");
     } else {
-        console.error("❌ BŁĄD KRYTYCZNY: Brak pliku Montserrat-Regular.ttf w assets/fonts/");
+        console.error("❌ BŁĄD: Brak pliku Montserrat-Regular.ttf");
     }
 }
-
-// Uruchomienie rejestracji przy starcie
 registerFonts();
 
-// === FUNKCJE POMOCNICZE ===
-
-// Pobieranie obrazka z URL
-function downloadImage(url) {
-    return new Promise((resolve, reject) => {
-        const client = url.startsWith('https') ? https : http;
-        client.get(url, (res) => {
-            if (res.statusCode !== 200) {
-                reject(new Error(`Błąd pobierania obrazu. Status: ${res.statusCode}`));
-                return;
-            }
-            const data = [];
-            res.on('data', (chunk) => data.push(chunk));
-            res.on('end', () => resolve(Buffer.concat(data)));
-        }).on('error', (err) => reject(err));
+// === POBIERANIE OBRAZU ===
+async function downloadImage(url) {
+    console.log(`📥 Pobieranie tła z URL: ${url}`);
+    
+    const response = await fetch(url, {
+        headers: {
+            // Udajemy przeglądarkę, żeby ominąć blokady
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
     });
+
+    if (!response.ok) {
+        throw new Error(`Serwer obrazka zwrócił błąd: ${response.status} ${response.statusText}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    
+    console.log(`📦 Pobranao obraz. Rozmiar danych: ${buffer.length} bajtów`);
+    return buffer;
 }
 
-// Zawijanie tekstu (Word Wrap)
+// === FUNKCJE POMOCNICZE ===
 function wrapText(ctx, text, maxWidth) {
     const words = text.split(' ');
     let lines = [];
@@ -76,7 +71,6 @@ function wrapText(ctx, text, maxWidth) {
     return lines;
 }
 
-// Skalowanie obrazu (object-fit: cover)
 function drawImageProp(ctx, img, x, y, w, h) {
     let offsetX = 0.5, offsetY = 0.5;
     let iw = img.width, ih = img.height;
@@ -104,49 +98,50 @@ function drawImageProp(ctx, img, x, y, w, h) {
 // === ENDPOINT API ===
 app.post('/render-slide', async (req, res) => {
     try {
-        console.log("Otrzymano request:", req.body); // Logowanie dla debugowania
-
         const { backgroundUrl, title, text } = req.body;
 
         if (!title || !text) {
-            return res.status(400).json({ error: "Brak pola title lub text" });
+            return res.status(400).json({ error: "Brak title lub text" });
         }
 
-        // 1. Tworzenie Canvas
         const canvas = new Canvas(1080, 1350);
         const ctx = canvas.getContext("2d");
 
-        // 2. Tło
+        // 1. RYSOWANIE TŁA
         try {
             if (backgroundUrl) {
                 const imgBuffer = await downloadImage(backgroundUrl);
-                const img = new Image(imgBuffer);
+                
+                // 🔥 2. ZMIANA: Używamy await loadImage() zamiast new Image()
+                // To gwarantuje, że obraz jest w pełni zdekodowany przed rysowaniem
+                const img = await loadImage(imgBuffer);
+                
                 drawImageProp(ctx, img, 0, 0, 1080, 1350);
+                console.log("✅ Tło narysowane pomyślnie.");
             } else {
-                // Fallback jeśli brak URL
-                ctx.fillStyle = "#111111";
-                ctx.fillRect(0, 0, 1080, 1350);
+                throw new Error("Pusty URL tła");
             }
         } catch (err) {
-            console.error("Błąd tła:", err.message);
+            console.error("⚠️ BŁĄD RYSOWANIA TŁA:", err.message);
+            // Fallback - czarne tło
             ctx.fillStyle = "#111111";
             ctx.fillRect(0, 0, 1080, 1350);
         }
 
-        // 3. Overlay (Ciemna warstwa)
-        ctx.fillStyle = "rgba(0,0,0,0.45)"; // Zwiększyłem lekko przyciemnienie dla lepszej czytelności
+        // 2. OVERLAY (Półprzezroczysta czerń)
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
         ctx.fillRect(0, 0, 1080, 1350);
 
-        // 4. Rysowanie Tytułu
-        ctx.font = '60px "Montserrat-Bold"'; // Używamy zarejestrowanej nazwy
+        // 3. TYTUŁ
+        ctx.font = '60px "Montserrat-Bold"';
         ctx.fillStyle = "#ffffff";
-        ctx.shadowColor = "rgba(0,0,0,0.8)";
+        ctx.shadowColor = "rgba(0,0,0,0.9)";
         ctx.shadowBlur = 15;
         ctx.textBaseline = "top";
 
         const titleX = 64;
         const titleY = 100;
-        const maxTextWidth = 1080 - (64 * 2); // 952px
+        const maxTextWidth = 1080 - 128;
         const titleLineHeight = 75;
 
         const titleLines = wrapText(ctx, title, maxTextWidth);
@@ -154,10 +149,10 @@ app.post('/render-slide', async (req, res) => {
             ctx.fillText(line, titleX, titleY + (index * titleLineHeight));
         });
 
-        // 5. Rysowanie Tekstu
+        // 4. TEKST
         const descriptionStartY = titleY + (titleLines.length * titleLineHeight) + 50;
         
-        ctx.font = '40px "Montserrat-Regular"'; // Używamy zarejestrowanej nazwy
+        ctx.font = '40px "Montserrat-Regular"';
         ctx.fillStyle = "#e5e7eb"; 
         ctx.shadowBlur = 10;
 
@@ -167,19 +162,18 @@ app.post('/render-slide', async (req, res) => {
             ctx.fillText(line, titleX, descriptionStartY + (index * descLineHeight));
         });
 
-        // 6. Generowanie Base64
+        // 5. OUTPUT
         const pngBuffer = await canvas.toBuffer('png');
         const base64String = `data:image/png;base64,${pngBuffer.toString('base64')}`;
 
         res.json({ imageBase64: base64String });
 
     } catch (error) {
-        console.error("Błąd renderowania:", error);
-        res.status(500).json({ error: "Render error: " + error.message });
+        console.error("🔥 BŁĄD KRYTYCZNY:", error);
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Start serwera
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Serwer działa na porcie ${PORT}`);
 });
